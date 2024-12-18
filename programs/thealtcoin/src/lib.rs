@@ -24,7 +24,7 @@ mod thealtcoin {
         burn_state.burned_amount = 0;
         burn_state.burn_limit = (burn_state.total_supply as f64 * 0.65) as u64;
         burn_state.mint = ctx.accounts.mint.key();
-        burn_state.minted_amount = 0; // Start with 0 minted tokens
+        burn_state.minted_amount = burn_state.total_supply; // Set minted amount to total supply
 
         // Create metadata for the token
         let token_data = DataV2 {
@@ -57,53 +57,67 @@ mod thealtcoin {
 
         create_metadata_accounts_v3(metadata_ctx, token_data, false, true, None)?;
 
-        msg!("THEALTCOIN initialized successfully. Ready for minting.");
-        Ok(())
-    }
-
-    pub fn mint_tokens(ctx: Context<MintTokens>, amount: u64) -> Result<()> {
-        let burn_state = &mut ctx.accounts.burn_state;
-
-        // Check if minting would exceed total supply
-        require!(
-            burn_state
-                .minted_amount
-                .checked_add(amount)
-                .ok_or(ErrorCode::NumericalOverflow)?
-                <= burn_state.total_supply,
-            ErrorCode::ExceedsSupply
-        );
-
-        let seeds = &["mint".as_bytes(), &[ctx.bumps.mint]];
-        let signer = [&seeds[..]];
-
-        // Mint the requested amount
+        // Mint the total supply to the deployer's token account
         mint_to(
             CpiContext::new_with_signer(
                 ctx.accounts.token_program.to_account_info(),
                 MintTo {
                     mint: ctx.accounts.mint.to_account_info(),
-                    to: ctx.accounts.destination.to_account_info(),
+                    to: ctx.accounts.token_account.to_account_info(),
                     authority: ctx.accounts.mint.to_account_info(),
                 },
                 &signer,
             ),
-            amount,
+            burn_state.total_supply,
         )?;
 
-        // Update the minted amount tracker
-        burn_state.minted_amount = burn_state
-            .minted_amount
-            .checked_add(amount)
-            .ok_or(ErrorCode::NumericalOverflow)?;
-
-        msg!(
-            "Minted {} tokens. Total minted: {}",
-            amount,
-            burn_state.minted_amount
-        );
+        msg!("THEALTCOIN initialized successfully with total supply minted to deployer");
         Ok(())
     }
+
+    // pub fn mint_tokens(ctx: Context<MintTokens>, amount: u64) -> Result<()> {
+    //     let burn_state = &mut ctx.accounts.burn_state;
+    //
+    //     // Check if minting would exceed total supply
+    //     require!(
+    //         burn_state
+    //             .minted_amount
+    //             .checked_add(amount)
+    //             .ok_or(ErrorCode::NumericalOverflow)?
+    //             <= burn_state.total_supply,
+    //         ErrorCode::ExceedsSupply
+    //     );
+    //
+    //     let seeds = &["mint".as_bytes(), &[ctx.bumps.mint]];
+    //     let signer = [&seeds[..]];
+    //
+    //     // Mint the requested amount
+    //     mint_to(
+    //         CpiContext::new_with_signer(
+    //             ctx.accounts.token_program.to_account_info(),
+    //             MintTo {
+    //                 mint: ctx.accounts.mint.to_account_info(),
+    //                 to: ctx.accounts.destination.to_account_info(),
+    //                 authority: ctx.accounts.mint.to_account_info(),
+    //             },
+    //             &signer,
+    //         ),
+    //         amount,
+    //     )?;
+    //
+    //     // Update the minted amount tracker
+    //     burn_state.minted_amount = burn_state
+    //         .minted_amount
+    //         .checked_add(amount)
+    //         .ok_or(ErrorCode::NumericalOverflow)?;
+    //
+    //     msg!(
+    //         "Minted {} tokens. Total minted: {}",
+    //         amount,
+    //         burn_state.minted_amount
+    //     );
+    //     Ok(())
+    // }
 
     pub fn transfer(ctx: Context<TransferTokens>, amount: u64) -> Result<()> {
         let burn_state = &mut ctx.accounts.burn_state;
@@ -290,4 +304,3 @@ pub enum ErrorCode {
     #[msg("Exceeds maximum supply")]
     ExceedsSupply,
 }
-

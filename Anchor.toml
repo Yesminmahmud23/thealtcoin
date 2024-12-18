@@ -12,8 +12,8 @@ altcoin = "38m5iMhNn13EfKF1uUqX2HLAGgqpmiNDxtSJSJsJKhaD"
 url = "https://api.apr.dev"
 
 [provider]
-cluster = "devnet"
-#cluster = "LocalNet"
+# cluster = "devnet"
+cluster = "LocalNet"
 wallet = "~/.config/solana/id.json"
 
 [scripts]

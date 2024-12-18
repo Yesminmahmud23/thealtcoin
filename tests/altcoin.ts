@@ -12,10 +12,12 @@ import assert from "assert";
 import { BN } from "bn.js";
 
 describe("THEALTCOIN", () => {
+  // Standard setup for our testing environment
   anchor.setProvider(anchor.AnchorProvider.env());
   const program = anchor.workspace.Thealtcoin as Program<Thealtcoin>;
   const provider = program.provider as anchor.AnchorProvider;
 
+  // Constants for token metadata and PDAs
   const METADATA_SEED = "metadata";
   const TOKEN_METADATA_PROGRAM_ID = new web3.PublicKey(
     "metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s"
@@ -24,15 +26,13 @@ describe("THEALTCOIN", () => {
   const metadata = {
     name: "TheAltcoin",
     symbol: "ALTCOIN",
-    uri: "https://lime-selected-hummingbird-313.mypinata.cloud/ipfs/bafkreibodust2wzl3tgxkopwre7wfrhjenfpehu6caos6thqb5wwtw4zyu",
+    uri: "https://circular-orange-leech.myfilebase.com/ipfs/QmQe5tZRCcXNo1MiwgvHABRQUzxFfcKjko9FzRwxXKTj6s",
     decimals: 9,
   };
 
-  const MINT_SEED = "mint";
-  const payer = program.provider.publicKey;
-
+  // Derive our program addresses
   const [mint] = web3.PublicKey.findProgramAddressSync(
-    [Buffer.from(MINT_SEED)],
+    [Buffer.from("mint")],
     program.programId
   );
 
@@ -53,322 +53,340 @@ describe("THEALTCOIN", () => {
   let payerAta: web3.PublicKey;
   let recipientKeypair: web3.Keypair;
   let recipientAta: web3.PublicKey;
+  let unauthorizedUser: web3.Keypair;
+  let unauthorizedAta: web3.PublicKey;
 
   before(async () => {
+    // Set up all test accounts
     recipientKeypair = web3.Keypair.generate();
-    payerAta = await getAssociatedTokenAddress(mint, payer);
+    unauthorizedUser = web3.Keypair.generate();
+
+    // Get all ATAs
+    payerAta = await getAssociatedTokenAddress(mint, provider.wallet.publicKey);
     recipientAta = await getAssociatedTokenAddress(
       mint,
       recipientKeypair.publicKey
     );
+    unauthorizedAta = await getAssociatedTokenAddress(
+      mint,
+      unauthorizedUser.publicKey
+    );
+
+    // Airdrop SOL to test accounts
+    const signature = await provider.connection.requestAirdrop(
+      recipientKeypair.publicKey,
+      2 * web3.LAMPORTS_PER_SOL
+    );
+    await provider.connection.confirmTransaction(signature);
   });
 
-  it("Initializes token correctly without minting", async () => {
-    const info = await program.provider.connection.getAccountInfo(mint);
+  it("Test 1: Initializes token with total supply", async () => {
+    // First check if already initialized
+    const info = await provider.connection.getAccountInfo(mint);
     if (info) {
       console.log("Token already initialized");
+      const burnStateAccount = await program.account.burnState.fetch(burnState);
+      assert(new BN(burnStateAccount.totalSupply).eq(new BN("99999999999999")));
       return;
     }
 
-    const tx = await program.methods
-      .initializeToken(metadata)
-      .accounts({
-        burnState,
-        metadata: metadataAddress,
-        mint,
-        tokenAccount: payerAta,
-        payer,
-        rent: web3.SYSVAR_RENT_PUBKEY,
-        systemProgram: web3.SystemProgram.programId,
-        tokenProgram: TOKEN_PROGRAM_ID,
-        tokenMetadataProgram: TOKEN_METADATA_PROGRAM_ID,
-        associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
-      })
-      .rpc();
-
-    console.log("Initialize transaction:", tx);
-
-    const burnStateAccount = await program.account.burnState.fetch(burnState);
-    assert.equal(
-      burnStateAccount.totalSupply.toString(),
-      "99999999999999",
-      "Total supply should be initialized correctly"
-    );
-    assert.equal(
-      burnStateAccount.mintedAmount.toString(),
-      "0",
-      "Initial minted amount should be 0"
-    );
-  });
-
-  it("Mints initial tokens successfully", async () => {
-    const mintAmount = new BN(1000).mul(new BN(10).pow(new BN(9)));
-
-    const tx = await program.methods
-      .mintTokens(mintAmount)
-      .accounts({
-        burnState,
-        mint,
-        destination: payerAta,
-        payer,
-        rent: web3.SYSVAR_RENT_PUBKEY,
-        systemProgram: web3.SystemProgram.programId,
-        tokenProgram: TOKEN_PROGRAM_ID,
-        associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
-      })
-      .rpc();
-
-    console.log("Mint transaction:", tx);
-
-    const balance = await program.provider.connection.getTokenAccountBalance(
-      payerAta
-    );
-    assert.equal(
-      balance.value.amount,
-      mintAmount.toString(),
-      "Token balance should match minted amount"
-    );
-  });
-
-  it("Transfers tokens with 2% burn", async () => {
-    // First create the recipient's token account
-    const createAtaIx = createAssociatedTokenAccountInstruction(
-      payer,
-      recipientAta,
-      recipientKeypair.publicKey,
-      mint
-    );
-
-    // Create ATA for recipient
     try {
-      const tx = new web3.Transaction().add(createAtaIx);
-      await provider.sendAndConfirm(tx);
-      console.log("Created recipient's Associated Token Account");
-    } catch (error) {
-      // Ignore error if account already exists
-      console.log("ATA might already exist, continuing with transfer");
-    }
-
-    // Get initial state
-    const initialBurnState = await program.account.burnState.fetch(burnState);
-    const transferAmount = new BN(100).mul(new BN(10).pow(new BN(9))); // 100 tokens
-
-    // Execute transfer
-    const tx = await program.methods
-      .transfer(transferAmount)
-      .accounts({
-        burnState,
-        mint,
-        from: payerAta,
-        to: recipientAta,
-        authority: payer,
-        tokenProgram: TOKEN_PROGRAM_ID,
-      })
-      .rpc();
-
-    console.log("Transfer transaction:", tx);
-
-    // Verify burn amount
-    const finalBurnState = await program.account.burnState.fetch(burnState);
-    const expectedBurnAmount = transferAmount.muln(2).divn(100);
-
-    assert.equal(
-      finalBurnState.burnedAmount.sub(initialBurnState.burnedAmount).toString(),
-      expectedBurnAmount.toString(),
-      "Burn amount should be 2% of transfer"
-    );
-
-    // Verify recipient balance
-    const recipientBalance =
-      await program.provider.connection.getTokenAccountBalance(recipientAta);
-    const expectedTransferAmount = transferAmount.sub(expectedBurnAmount);
-    assert.equal(
-      recipientBalance.value.amount,
-      expectedTransferAmount.toString(),
-      "Recipient should receive 98% of transfer amount"
-    );
-  });
-
-  it("Stops burning when limit is reached", async () => {
-    const burnStateAccount = await program.account.burnState.fetch(burnState);
-    console.log(
-      "Current burned amount:",
-      burnStateAccount.burnedAmount.toString()
-    );
-    console.log("Burn limit:", burnStateAccount.burnLimit.toString());
-
-    assert(
-      burnStateAccount.burnLimit.toString() ===
-        ((BigInt(99999999999999) * BigInt(65)) / BigInt(100)).toString(),
-      "Burn limit should remain at 65% of total supply"
-    );
-  });
-
-  it("Prevents minting beyond total supply", async () => {
-    // Try to mint more than remaining supply
-    const remainingSupply = new BN(99_999_999_999_999);
-    try {
-      await program.methods
-        .mintTokens(remainingSupply.addn(1))
+      const tx = await program.methods
+        .initializeToken(metadata)
         .accounts({
           burnState,
+          metadata: metadataAddress,
           mint,
-          destination: payerAta,
-          payer,
+          tokenAccount: payerAta,
+          payer: provider.wallet.publicKey,
           rent: web3.SYSVAR_RENT_PUBKEY,
           systemProgram: web3.SystemProgram.programId,
           tokenProgram: TOKEN_PROGRAM_ID,
+          tokenMetadataProgram: TOKEN_METADATA_PROGRAM_ID,
           associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
         })
         .rpc();
-      assert.fail("Should not allow minting beyond total supply");
+
+      await provider.connection.confirmTransaction(tx);
+      console.log("Initialization transaction:", tx);
+
+      // Verify burn state initialization
+      const burnStateAccount = await program.account.burnState.fetch(burnState);
+      assert(new BN(burnStateAccount.totalSupply).eq(new BN("99999999999999")));
+      assert(burnStateAccount.mintedAmount.eq(burnStateAccount.totalSupply));
+      assert(burnStateAccount.burnedAmount.eq(new BN(0)));
+
+      // Verify deployer received total supply
+      const balance = await provider.connection.getTokenAccountBalance(
+        payerAta
+      );
+      assert(new BN(balance.value.amount).eq(burnStateAccount.totalSupply));
     } catch (error) {
-      assert(error.toString().includes("ExceedsSupply"));
+      console.error("Initialization error:", error);
+      throw error;
     }
   });
 
-  it("Handles very small transfer amounts correctly", async () => {
-    // We'll test with 10 tokens (with 9 decimals)
-    // Since our burn rate is 2%, this would result in a 0.2 token burn
-    const tinyAmount = new BN(10).mul(new BN(10).pow(new BN(8))); // 1 token
-
+  it("Test 2: Verifies initial token distribution", async () => {
     try {
-      await program.methods
-        .transfer(tinyAmount)
+      const burnStateAccount = await program.account.burnState.fetch(burnState);
+      const balance = await provider.connection.getTokenAccountBalance(
+        payerAta
+      );
+
+      // Verify deployer has total supply
+      assert(
+        new BN(balance.value.amount).gte(burnStateAccount.totalSupply),
+        "Deployer should have full initial supply"
+      );
+
+      // Verify burn state tracking
+      assert(
+        burnStateAccount.mintedAmount.eq(burnStateAccount.totalSupply),
+        "Minted amount should equal total supply"
+      );
+      assert(
+        burnStateAccount.burnedAmount.eq(new BN(0)),
+        "Initial burned amount should be zero"
+      );
+    } catch (error) {
+      console.error("Initial distribution verification error:", error);
+      throw error;
+    }
+  });
+
+  it("Test 3: Executes first transfer with burn", async () => {
+    try {
+      // Create recipient ATA if needed
+      try {
+        const createAtaIx = createAssociatedTokenAccountInstruction(
+          provider.wallet.publicKey,
+          recipientAta,
+          recipientKeypair.publicKey,
+          mint
+        );
+        const setupTx = new web3.Transaction().add(createAtaIx);
+        await provider.sendAndConfirm(setupTx);
+      } catch (e) {
+        console.log("Recipient ATA might already exist");
+      }
+
+      const initialBurnState = await program.account.burnState.fetch(burnState);
+      const transferAmount = new BN(1000).mul(new BN(10).pow(new BN(9))); // 1000 tokens
+
+      const tx = await program.methods
+        .transfer(transferAmount)
         .accounts({
           burnState,
           mint,
           from: payerAta,
           to: recipientAta,
-          authority: payer,
+          authority: provider.wallet.publicKey,
           tokenProgram: TOKEN_PROGRAM_ID,
         })
         .rpc();
 
-      // Get the burn state after the attempted transfer
-      const burnStateAfter = await program.account.burnState.fetch(burnState);
+      await provider.connection.confirmTransaction(tx);
 
-      // Calculate expected burn amount (2% of transfer amount)
-      const expectedBurn = tinyAmount.muln(2).divn(100);
-      assert(expectedBurn.gtn(0), "Burn amount should be greater than 0");
+      // Verify burn amount
+      const finalBurnState = await program.account.burnState.fetch(burnState);
+      const expectedBurn = transferAmount.muln(2).divn(100);
+      assert(
+        finalBurnState.burnedAmount.eq(expectedBurn),
+        "First burn amount should be exactly 2%"
+      );
+
+      // Verify recipient balance
+      const recipientBalance = await provider.connection.getTokenAccountBalance(
+        recipientAta
+      );
+      assert(
+        new BN(recipientBalance.value.amount).gte(
+          transferAmount.sub(expectedBurn)
+        ),
+        "Recipient should receive 98% of transfer"
+      );
     } catch (error) {
-      if (error.toString().includes("AmountTooSmall")) {
-        // This is expected for amounts that would result in 0 burn
-        return;
-      }
+      console.error("First transfer error:", error);
       throw error;
     }
   });
 
-  it("Verifies burn mechanism stops at limit", async () => {
-    // First, let's mint a reasonable amount for testing
-    const testAmount = new BN(10000).mul(new BN(10).pow(new BN(9))); // 10,000 tokens
-
+  it("Test 4: Handles multiple transfers correctly", async () => {
     try {
-      await program.methods
-        .mintTokens(testAmount)
-        .accounts({
-          burnState,
-          mint,
-          destination: payerAta,
-          payer,
-          rent: web3.SYSVAR_RENT_PUBKEY,
-          systemProgram: web3.SystemProgram.programId,
-          tokenProgram: TOKEN_PROGRAM_ID,
-          associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
-        })
-        .rpc();
-
+      const transferAmount = new BN(100).mul(new BN(10).pow(new BN(9))); // 100 tokens
+      const numTransfers = 3;
       const initialBurnState = await program.account.burnState.fetch(burnState);
-      console.log(
-        "Initial burned amount:",
-        initialBurnState.burnedAmount.toString()
-      );
-      console.log("Burn limit:", initialBurnState.burnLimit.toString());
 
-      // Let's do multiple smaller transfers to approach the burn limit
-      const transferAmount = new BN(1000).mul(new BN(10).pow(new BN(9))); // 1,000 tokens per transfer
-      let currentBurnState = initialBurnState;
-      let transferCount = 0;
-
-      while (
-        currentBurnState.burnedAmount.lt(initialBurnState.burnLimit) &&
-        transferCount < 10
-      ) {
-        await program.methods
+      // Execute multiple transfers
+      for (let i = 0; i < numTransfers; i++) {
+        const tx = await program.methods
           .transfer(transferAmount)
           .accounts({
             burnState,
             mint,
             from: payerAta,
             to: recipientAta,
-            authority: payer,
+            authority: provider.wallet.publicKey,
             tokenProgram: TOKEN_PROGRAM_ID,
           })
           .rpc();
-
-        currentBurnState = await program.account.burnState.fetch(burnState);
-        console.log(
-          "Current burned amount:",
-          currentBurnState.burnedAmount.toString()
-        );
-        transferCount++;
+        await provider.connection.confirmTransaction(tx);
       }
 
+      // Verify cumulative burn
       const finalBurnState = await program.account.burnState.fetch(burnState);
+      const expectedTotalBurn = transferAmount
+        .muln(2)
+        .divn(100)
+        .muln(numTransfers);
       assert(
-        finalBurnState.burnedAmount.lte(finalBurnState.burnLimit),
-        "Burned amount should not exceed burn limit"
+        finalBurnState.burnedAmount
+          .sub(initialBurnState.burnedAmount)
+          .eq(expectedTotalBurn),
+        "Cumulative burn should be correct"
       );
     } catch (error) {
-      console.log("Error details:", error.toString());
+      console.error("Multiple transfer error:", error);
       throw error;
     }
   });
 
-  it("Tracks total minted amount accurately across multiple mints", async () => {
-    const initialBurnState = await program.account.burnState.fetch(burnState);
-    const mintAmount1 = new BN(100).mul(new BN(10).pow(new BN(9))); // 100 tokens
-    const mintAmount2 = new BN(50).mul(new BN(10).pow(new BN(9))); // 50 tokens
+  it("Test 5: Verifies burn limit mechanism", async () => {
+    try {
+      const burnStateAccount = await program.account.burnState.fetch(burnState);
+      const expectedBurnLimit =
+        (BigInt(99999999999999) * BigInt(65)) / BigInt(100);
 
-    // Track initial minted amount
-    const initialMintedAmount = initialBurnState.mintedAmount;
+      assert(
+        burnStateAccount.burnLimit.eq(new BN(expectedBurnLimit.toString())),
+        "Burn limit should be 65% of total supply"
+      );
 
-    // First mint
-    await program.methods
-      .mintTokens(mintAmount1)
-      .accounts({
-        burnState,
-        mint,
-        destination: payerAta,
-        payer,
-        rent: web3.SYSVAR_RENT_PUBKEY,
-        systemProgram: web3.SystemProgram.programId,
-        tokenProgram: TOKEN_PROGRAM_ID,
-        associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
-      })
-      .rpc();
+      // Try transfer if not at burn limit
+      if (burnStateAccount.burnedAmount.lt(burnStateAccount.burnLimit)) {
+        const transferAmount = new BN(1000).mul(new BN(10).pow(new BN(9)));
+        const tx = await program.methods
+          .transfer(transferAmount)
+          .accounts({
+            burnState,
+            mint,
+            from: payerAta,
+            to: recipientAta,
+            authority: provider.wallet.publicKey,
+            tokenProgram: TOKEN_PROGRAM_ID,
+          })
+          .rpc();
+        await provider.connection.confirmTransaction(tx);
 
-    // Second mint
-    await program.methods
-      .mintTokens(mintAmount2)
-      .accounts({
-        burnState,
-        mint,
-        destination: payerAta,
-        payer,
-        rent: web3.SYSVAR_RENT_PUBKEY,
-        systemProgram: web3.SystemProgram.programId,
-        tokenProgram: TOKEN_PROGRAM_ID,
-        associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
-      })
-      .rpc();
+        const updatedBurnState = await program.account.burnState.fetch(
+          burnState
+        );
+        assert(
+          updatedBurnState.burnedAmount.lte(updatedBurnState.burnLimit),
+          "Should never exceed burn limit"
+        );
+      }
+    } catch (error) {
+      console.error("Burn limit verification error:", error);
+      throw error;
+    }
+  });
 
-    const finalBurnState = await program.account.burnState.fetch(burnState);
-    assert.equal(
-      finalBurnState.mintedAmount.toString(),
-      initialMintedAmount.add(mintAmount1).add(mintAmount2).toString(),
-      "Minted amount should track cumulative mints correctly"
-    );
+  it("Test 6: Handles small transfers correctly", async () => {
+    try {
+      const tinyAmount = new BN(10).mul(new BN(10).pow(new BN(8))); // 1 token
+      const initialBurnState = await program.account.burnState.fetch(burnState);
+
+      const tx = await program.methods
+        .transfer(tinyAmount)
+        .accounts({
+          burnState,
+          mint,
+          from: payerAta,
+          to: recipientAta,
+          authority: provider.wallet.publicKey,
+          tokenProgram: TOKEN_PROGRAM_ID,
+        })
+        .rpc();
+      await provider.connection.confirmTransaction(tx);
+
+      const finalBurnState = await program.account.burnState.fetch(burnState);
+      assert(
+        finalBurnState.burnedAmount.gte(initialBurnState.burnedAmount),
+        "Burn amount should increase or stay same"
+      );
+    } catch (error) {
+      if (!error.toString().includes("AmountTooSmall")) {
+        console.error("Small transfer error:", error);
+        throw error;
+      }
+    }
+  });
+
+  it("Test 7: Verifies supply tracking", async () => {
+    try {
+      const burnStateAccount = await program.account.burnState.fetch(burnState);
+      const totalBalance = await provider.connection.getTokenAccountBalance(
+        payerAta
+      );
+      const recipientBalance = await provider.connection.getTokenAccountBalance(
+        recipientAta
+      );
+
+      // Calculate total circulating supply
+      const totalCirculating = new BN(totalBalance.value.amount).add(
+        new BN(recipientBalance.value.amount)
+      );
+
+      // Verify total supply conservation
+      assert(
+        totalCirculating
+          .add(burnStateAccount.burnedAmount)
+          .lte(burnStateAccount.totalSupply),
+        "Total supply conservation should be maintained"
+      );
+    } catch (error) {
+      console.error("Supply tracking error:", error);
+      throw error;
+    }
+  });
+
+  it("Test 8: Handles large transfers correctly", async () => {
+    try {
+      // Get current balance to determine large transfer amount
+      const balance = await provider.connection.getTokenAccountBalance(
+        payerAta
+      );
+      const largeAmount = new BN(balance.value.amount).divn(2); // Transfer half of current balance
+
+      const initialBurnState = await program.account.burnState.fetch(burnState);
+
+      const tx = await program.methods
+        .transfer(largeAmount)
+        .accounts({
+          burnState,
+          mint,
+          from: payerAta,
+          to: recipientAta,
+          authority: provider.wallet.publicKey,
+          tokenProgram: TOKEN_PROGRAM_ID,
+        })
+        .rpc();
+      await provider.connection.confirmTransaction(tx);
+
+      const finalBurnState = await program.account.burnState.fetch(burnState);
+      const expectedBurn = largeAmount.muln(2).divn(100);
+
+      assert(
+        finalBurnState.burnedAmount
+          .sub(initialBurnState.burnedAmount)
+          .lte(expectedBurn),
+        "Large transfer burn should not exceed 2%"
+      );
+    } catch (error) {
+      console.error("Large transfer error:", error);
+      throw error;
+    }
   });
 });
